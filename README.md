@@ -77,8 +77,8 @@ labels_conservative = detector.predict(X, contamination=0.05)
 
 RankOD uses **Reverse k-NN Density Estimation**:
 
-1. For each point, compute its k nearest neighbors
-2. For each neighbor, find the rank at which the point appears in that neighbor's J-nearest neighbor list
+1. For each point, compute its `n_neighbors` nearest neighbors
+2. For each neighbor, find the rank at which the point appears in that neighbor's `max_rank`-nearest neighbor list
 3. Apply a kernel function to smooth these ranks (default: harmonic kernel `k(r) = 1/r`)
 4. Sum the kernel values to estimate local density
 5. Convert density to outlier score: `score = max_density - density`
@@ -138,7 +138,7 @@ Traditional distance-based outlier detection methods struggle in high dimensions
 
 ## Documentation
 
-Full documentation available at: https://hirank.readthedocs.io
+Full documentation coming soon at: https://hirank.readthedocs.io
 
 ## Development
 
