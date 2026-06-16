@@ -62,7 +62,7 @@ detector = RankOD(
 )
 detector.fit(X)
 
-# Get outlier scores (higher = more outlier)
+# Get outlier scores normalized to [0, 1] range (higher = more outlier)
 scores = detector.score_samples(X)
 
 # Predict outliers using contamination from initialization
@@ -81,7 +81,7 @@ RankOD uses **Reverse k-NN Density Estimation**:
 2. For each neighbor, find the rank at which the point appears in that neighbor's J-nearest neighbor list
 3. Apply a kernel function to smooth these ranks (default: harmonic kernel `k(r) = 1/r`)
 4. Sum the kernel values to estimate local density
-5. Convert density to outlier score: `score = max_density - density`
+5. Normalize density to [0, 1] outlier score: `score = (max_density - density) / (max_density - min_density)`
 
 **Key Parameters:**
 - `n_neighbors=15`: Number of nearest neighbors for density estimation

@@ -142,13 +142,19 @@ class RankOD(BaseEstimator, OutlierMixin):
     Attributes
     ----------
     outlier_scores_ : np.ndarray of shape (n_samples,)
-        Outlier scores for training samples. Higher values indicate outliers.
+        Outlier scores for training samples, normalized to [0, 1] range.
+        Higher values indicate outliers (0=most normal, 1=most anomalous).
 
     density_scores_ : np.ndarray of shape (n_samples,)
-        Raw density scores (before conversion to outlier scores).
+        Raw density scores (before normalization to outlier scores).
 
     max_density_ : float
         Maximum possible density score (n_neighbors * kernel(1)).
+        Used for score normalization.
+
+    min_density_ : float
+        Minimum possible density score (n_neighbors * kernel(max_rank)).
+        Used for score normalization.
 
     index_ : NNDescent
         Fitted nearest neighbor index.
@@ -350,13 +356,17 @@ class RankOD(BaseEstimator, OutlierMixin):
             kernel_values = kernel_func(reverse_ranks)
             density_scores[i] = np.sum(kernel_values)
 
-        # Store density scores and compute max density
+        # Store density scores and compute density bounds
         if is_training:
             self.density_scores_ = density_scores
+        
+        # Calculate min and max density for normalization
         self.max_density_ = self.n_neighbors * kernel_func(np.array([1.0]))[0]
+        self.min_density_ = self.n_neighbors * kernel_func(np.array([float(self.max_rank)]))[0]
 
         # Convert to outlier scores: higher density = lower outlier score
-        outlier_scores = self.max_density_ - density_scores
+        # Normalize to [0, 1] range for interpretability
+        outlier_scores = (self.max_density_ - density_scores) / (self.max_density_ - self.min_density_)
 
         return outlier_scores
 
@@ -381,7 +391,8 @@ class RankOD(BaseEstimator, OutlierMixin):
         Returns
         -------
         np.ndarray of shape (n_samples,)
-            Outlier scores for samples.
+            Outlier scores for samples, normalized to [0, 1] range.
+            Higher scores indicate outliers (0=most normal, 1=most anomalous).
         """
         check_is_fitted(self, ["index_", "n_features_in_"])
         

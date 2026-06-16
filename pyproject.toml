@@ -9,6 +9,7 @@ description = "High-dimensional rank-based outlier detection using reverse k-NN 
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 authors = [
+    {name = "Aaron Smith"}
     {name = "John Healy", email = "jchealy@gmail.com"}
 ]
 requires-python = ">=3.10"
