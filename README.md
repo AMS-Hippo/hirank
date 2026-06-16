@@ -136,6 +136,87 @@ Traditional distance-based outlier detection methods struggle in high dimensions
 - **Kernel smoothing**: Provides robustness to rank variations
 - **Approximate NN search**: PyNNDescent enables efficient computation even for large datasets
 
+## Use Cases: Outlier Detection vs Out-of-Distribution Detection
+
+RankOD is versatile and can handle both **outlier detection** and **out-of-distribution (OOD) detection**. Understanding the difference is important:
+
+### Outlier Detection
+Finding **rare or unusual instances** within the expected data distribution.
+
+**Examples:**
+- Damaged products on a manufacturing line
+- Fraudulent transactions among normal ones
+- Corrupted sensor readings
+
+```python
+# Outlier Detection in feature space
+from hirank import RankOD
+import numpy as np
+
+# Training data: normal operation
+sensor_readings = np.random.randn(1000, 50)  # Normal sensors
+detector = RankOD(n_neighbors=15, max_rank=100)
+detector.fit(sensor_readings)
+
+# New data: includes some faulty sensors
+new_readings = np.random.randn(100, 50)
+new_readings[0] *= 5  # Simulated fault
+scores = detector.score_samples(new_readings)
+
+# High scores indicate outliers (faulty sensors)
+print(f"Faulty sensor score: {scores[0]:.3f}")  # High score
+print(f"Normal sensor score: {scores[1]:.3f}")  # Low score
+```
+
+### Out-of-Distribution (OOD) Detection
+Identifying inputs from a **fundamentally different distribution** than training data.
+
+**Examples:**
+- Novel classes not seen during training
+- Domain shift (model trained on photos, tested on sketches)
+- Adversarial or corrupted inputs
+
+```python
+# OOD Detection with neural network embeddings
+from hirank import RankOD
+from sklearn.datasets import fetch_openml
+from sklearn.decomposition import PCA
+
+# Load MNIST and create OOD scenario
+mnist = fetch_openml('mnist_784', version=1, parser='auto')
+X, y = mnist.data.values, mnist.target.values.astype(int)
+
+# Train on digits 0-8 only (known distribution)
+train_mask = y < 9
+X_train = X[train_mask]
+
+# Reduce dimensionality
+pca = PCA(n_components=50, random_state=42)
+X_train_reduced = pca.fit_transform(X_train)
+
+# Fit detector on known classes
+detector = RankOD(n_neighbors=15, max_rank=100)
+detector.fit(X_train_reduced)
+
+# Test on all digits (includes digit 9 as OOD)
+X_test_reduced = pca.transform(X[:1000])
+scores = detector.score_samples(X_test_reduced)
+
+# Digit 9 (OOD) gets high scores
+y_test = y[:1000]
+ood_mask = y_test == 9
+print(f"Mean OOD score (digit 9): {scores[ood_mask].mean():.3f}")  # High
+print(f"Mean in-distribution score: {scores[~ood_mask].mean():.3f}")  # Low
+```
+
+### Key Insight
+
+Neural networks map semantically similar inputs close together in embedding space. This makes RankOD effective for OOD detection:
+- **Training classes** → dense regions in embedding space
+- **Novel classes** → sparse regions → detected as outliers
+
+This is why the MNIST example (hiding digit 9) demonstrates OOD detection rather than pure outlier detection—digit 9 is a completely unseen class, not just an unusual instance of known classes.
+
 ## Documentation
 
 Full documentation coming soon at: https://hirank.readthedocs.io
