@@ -416,7 +416,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         """
         decision_scores = self.decision_function(X, contamination=contamination)
         predictions = np.full_like(decision_scores, 1, dtype="int")
-        predictions[decision_scores <= 0] = -1
+        outliers = (decision_scores >= 0) if self.reverse_scores else (decision_scores <= 0)
+        predictions[outliers] = -1
         return predictions
 
     def fit_predict(self, X, y=None):
@@ -438,7 +439,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         """
         self.fit(X)
         prediction = np.full_like(self.outlier_scores_, 1, dtype="int")
-        prediction[self.outlier_scores_ <= self.offset_] = -1
+        outliers = self.outlier_scores_ >= self.offset_ if self.reverse_scores else self.outlier_scores_ <= self.offset_
+        prediction[outliers] = -1
         return prediction
 
     def _get_kernel_function(self) -> Callable:

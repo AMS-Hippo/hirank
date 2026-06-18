@@ -78,6 +78,22 @@ def test_fit_predict():
     assert set(labels).issubset({-1, 1})
 
 
+def test_reverse_scores():
+    """Test with reversed scores"""
+    X_normal = np.random.randn(99, 10)
+    X_outliers = np.random.randn(1, 10) * 5 + 10  # Far from normal data
+    X = np.vstack([X_normal, X_outliers])
+
+    reverse_detector = RankOD(n_neighbors=10, max_rank=50, reverse_scores=True)
+    reverse_outliers = reverse_detector.fit_predict(X)
+    reverse_scores = reverse_detector.score_samples(X)
+
+    assert len(reverse_scores) == 100
+    assert reverse_scores.dtype == np.float64
+    assert reverse_scores[-1] == np.max(reverse_scores)
+    assert reverse_outliers[-1] == -1
+
+
 def test_different_kernels():
     """Test with different kernel functions."""
     X = np.random.randn(50, 5)
