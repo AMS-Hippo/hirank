@@ -7,11 +7,12 @@ name = "hirank"
 version = "0.1.1"
 description = "High-dimensional rank-based outlier detection using reverse k-NN density estimation"
 readme = "README.md"
-license = {text = "BSD-3-Clause"}
+license = {text = "MIT"}
 authors = [
     {name = "Aaron Smith"},
     {name = "John Healy", email = "jchealy@gmail.com"}
 ]
+maintainers = [{name = "John Healy", email = "jchealy@gmail.com"}, {name= "Ryan DeWolf"}]
 requires-python = ">=3.10"
 keywords = [
     "outlier detection",
@@ -25,7 +26,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: BSD License",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
