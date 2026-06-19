@@ -170,7 +170,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         Note: PyNNDescent internally uses float32, so using np.float32 here
         avoids precision conversion and reduces memory footprint.
 
-    kernel : {'harmonic', 'inverse_sqrt', 'gaussian'} or callable, default='harmonic'
+    kernel : {'harmonic', 'inverse_sqrt', 'gaussian'} or callable, default='inverse_sqrt'
         Kernel function to apply to ranks:
         
         - 'harmonic': k(r) = 1/r
@@ -246,7 +246,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         reverse_scores: bool = False,
         precompute_neighbors: bool = False,
         dtype=np.float64,
-        kernel: str | Callable = "harmonic",
+        kernel: str | Callable = "inverse_sqrt",
         kernel_params: dict | None = {},
         metric: str = "euclidean",
         metric_kwds: dict | None = {},
