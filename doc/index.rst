@@ -17,15 +17,6 @@ HiRank: High-dimensional Rank-based Outlier Detection
 density estimation with kernel smoothing, optimized for high-dimensional data using 
 PyNNDescent for efficient approximate nearest neighbor search.
 
-Features
---------
-
-* 🚀 **Fast**: Leverages PyNNDescent for approximate nearest neighbor search
-* 🎯 **Focused**: Single algorithm optimized for high-dimensional outlier detection
-* 🔬 **Scikit-learn Compatible**: Follows sklearn API conventions
-* ⚡ **Numba-accelerated**: Critical loops optimized with Numba JIT compilation
-* 🛠️ **Flexible**: Supports multiple kernel functions
-
 Quick Start
 -----------
 
@@ -50,7 +41,7 @@ Quick Start
 Installation
 ------------
 
-From PyPI::
+From pypi (coming soon!)::
 
     pip install hirank
 
@@ -68,22 +59,18 @@ Documentation
 -------------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: User Guide
 
    installation
-   quickstart
-   algorithm
-   api
-   mnist_outlier_detection
+   mnist_ood_detection
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Development
+   :maxdepth: 1
+   :caption: API
 
-   contributing
-   benchmarks
-   changelog
+   api
+
 
 Indices and tables
 ==================

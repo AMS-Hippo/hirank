@@ -28,6 +28,7 @@ def harmonic_kernel(ranks: np.ndarray) -> np.ndarray:
     -------
     np.ndarray
         Kernel values
+
     """
     return 1.0 / ranks
 
@@ -66,6 +67,7 @@ def gaussian_kernel(ranks: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     -------
     np.ndarray
         Kernel values
+
     """
     return np.exp(-(ranks**2) / (2.0 * sigma**2))
 
@@ -102,6 +104,7 @@ def compute_reverse_ranks(
     -------
     np.ndarray
         Reverse ranks
+
     """
     reverse_ranks = np.empty_like(nn_indices)
     for i in prange(nn_indices.shape[0]):
@@ -140,8 +143,36 @@ class RankOD(OutlierMixin, BaseEstimator):
         Maximum rank to consider in reverse nearest neighbor search.
         Ranks beyond max_rank are capped at max_rank.
 
+    contamination : float, default=0.1
+        Expected proportion of outliers in the dataset.
+        Used to set the threshold for binary classification in predict().
+
+    reverse_scores : bool, default=False
+        Flag to reverse the scores so that higher scores are more likely to be outliers.
+    
+    precompute_neighbors : bool, default=False
+        Whether to pre-compute and store max_rank nearest neighbors for all training points.
+
+        - False (default): Memory-efficient mode. Queries index on-demand during scoring.
+          Memory: O(1), Scoring speed: Moderate (requires additional queries)
+        - True: Speed-optimized mode. Pre-computes and stores neighbor arrays.
+          Memory: O(n_samples * max_rank), Scoring speed: Fast (array lookups)
+
+        For large datasets, False is recommended to avoid memory issues.
+
+    dtype : numpy.dtype, default=np.float64
+        Data type for internal storage of training data.
+
+        - np.float64 (default): Standard sklearn precision, ~8 bytes per value
+        - np.float32: Half the memory usage, ~4 bytes per value, sufficient precision
+          for most distance-based outlier detection tasks
+
+        Note: PyNNDescent internally uses float32, so using np.float32 here
+        avoids precision conversion and reduces memory footprint.
+
     kernel : {'harmonic', 'inverse_sqrt', 'gaussian'} or callable, default='harmonic'
         Kernel function to apply to ranks:
+        
         - 'harmonic': k(r) = 1/r
         - 'inverse_sqrt': k(r) = 1/sqrt(r)
         - 'gaussian': k(r) = exp(-r^2 / (2*sigma^2))
@@ -157,30 +188,6 @@ class RankOD(OutlierMixin, BaseEstimator):
     metric_kwds : dict, optional
         Additional keyword arguments for the metric.
 
-    contamination : float, default=0.1
-        Expected proportion of outliers in the dataset.
-        Used to set the threshold for binary classification in predict().
-        Must be in the range (0, 0.5].
-
-    reverse_scores : bool, default=False
-        Flag to reverse the scores so that higher scores are more likely to be outliers.
-
-    precompute_neighbors : bool, default=False
-        Whether to pre-compute and store max_rank nearest neighbors for all training points.
-        - False (default): Memory-efficient mode. Queries index on-demand during scoring.
-          Memory: O(1), Scoring speed: Moderate (requires additional queries)
-        - True: Speed-optimized mode. Pre-computes and stores neighbor arrays.
-          Memory: O(n_samples * max_rank), Scoring speed: Fast (array lookups)
-        For large datasets, False is recommended to avoid memory issues.
-
-    dtype : numpy.dtype, default=np.float64
-        Data type for internal storage of training data.
-        - np.float64 (default): Standard sklearn precision, ~8 bytes per value
-        - np.float32: Half the memory usage, ~4 bytes per value, sufficient precision
-          for most distance-based outlier detection tasks
-        Note: PyNNDescent internally uses float32, so using np.float32 here
-        avoids precision conversion and reduces memory footprint.
-
     n_jobs : int, default=-1
         Number of parallel jobs for nearest neighbor search.
         -1 uses all available cores.
@@ -195,18 +202,18 @@ class RankOD(OutlierMixin, BaseEstimator):
     ----------
     outlier_scores_ : np.ndarray of shape (n_samples,)
         Outlier scores for training samples, normalized to [0, 1] range.
-        Higher values indicate outliers (0=most normal, 1=most anomalous).
+        Lower values indicate outliers.
+    
+    offset_ : float
+        Learned threshold to set the specified proportion of training data
+        (as defined by the contamination parameter) to be outliers. Calling
+        predict on new data uses the learned threshold to make a decision.
 
-    density_scores_ : np.ndarray of shape (n_samples,)
-        Raw density scores (before normalization to outlier scores).
+    max_raw_score_ : float
+        Maximum possible raw density score. Used for score normalization.
 
-    max_density_ : float
-        Maximum possible density score (n_neighbors * kernel(1)).
-        Used for score normalization.
-
-    min_density_ : float
-        Minimum possible density score (n_neighbors * kernel(max_rank)).
-        Used for score normalization.
+    min_raw_score_ : float
+        Minimum possible raw density score. Used for score normalization.
 
     index_ : NNDescent
         Fitted nearest neighbor index.
@@ -228,6 +235,7 @@ class RankOD(OutlierMixin, BaseEstimator):
     ----------
     Based on reverse k-NN density estimation with kernel smoothing for
     high-dimensional outlier detection.
+
     """
 
     def __init__(
@@ -276,6 +284,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         -------
         self : object
             Fitted estimator.
+
         """
         X = validate_data(self, X, accept_sparse=False, dtype=self.dtype, reset=True)
         n_samples, n_features = X.shape
@@ -338,9 +347,7 @@ class RankOD(OutlierMixin, BaseEstimator):
 
     def score_samples(self, X):
         """
-        Compute outlier scores for samples.
-
-        Smaller scores indicate more likely outliers.
+        Compute outlier scores for samples. Smaller scores indicate more likely outliers.
 
         **Note on scoring new samples:**
         For new test samples not in the training set, RankOD computes reverse ranks
@@ -358,6 +365,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         -------
         np.ndarray of shape (n_samples,)
             Outlier scores for samples. Higher scores indicate outliers (0=most anomalous, 1=most normal).
+
         """
         check_is_fitted(self, ["index_", "n_features_in_"])
         # Handle single sample (1D array)
@@ -382,6 +390,7 @@ class RankOD(OutlierMixin, BaseEstimator):
     def decision_function(self, X, contamination: float | None = None):
         """
         Returns a shifted copy of the scores such that non-positive scores are outliers.
+
         """
         # TODO implement other options (possibly using a learned global threshold) to
         # rescale scores so negatives are outliers
@@ -413,6 +422,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         -------
         np.ndarray of shape (n_samples,)
             Predicted labels: -1 for outliers, 1 for inliers.
+
         """
         decision_scores = self.decision_function(X, contamination=contamination)
         predictions = np.full_like(decision_scores, 1, dtype="int")
@@ -436,6 +446,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         -------
         np.ndarray of shape (n_samples,)
             Predicted labels: -1 for outliers, 1 for inliers.
+
         """
         self.fit(X)
         prediction = np.full_like(self.outlier_scores_, 1, dtype="int")
@@ -475,6 +486,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         -------
         np.ndarray of shape (n_samples,)
             Outlier scores (lower = more outlier).
+
         """
         kernel_func = self._get_kernel_function()
 

@@ -8,9 +8,9 @@ sys.path.insert(0, os.path.abspath(".."))
 # -- Project information -----------------------------------------------------
 
 project = "HiRank"
-copyright = "2024, John Healy"
+copyright = "2026 Tutte Institute for Mathematics and Computing"
 author = "John Healy"
-release = "0.1.0"
+release = "0.1.1"
 
 # -- General configuration ---------------------------------------------------
 
@@ -22,6 +22,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
     "numpydoc",
+    "nbsphinx",
 ]
 
 templates_path = ["_templates"]
@@ -50,9 +51,8 @@ napoleon_use_rtype = True
 # Autodoc settings
 autodoc_default_options = {
     "members": True,
-    "member-order": "bysource",
-    "special-members": "__init__",
-    "undoc-members": True,
+    'show-inheritance': True,
+    # "special-members": "__init__",
     "exclude-members": "__weakref__",
 }
 
@@ -66,3 +66,5 @@ intersphinx_mapping = {
 
 # Numpydoc settings
 numpydoc_show_class_members = False
+
+nbsphinx_allow_errors = True

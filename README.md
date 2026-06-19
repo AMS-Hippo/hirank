@@ -4,14 +4,6 @@
 
 HiRank is a tightly-scoped outlier detection library implementing reverse k-NN density estimation with kernel smoothing, optimized for high-dimensional data using PyNNDescent for efficient approximate nearest neighbor search.
 
-## Features
-
-- 🚀 **Fast**: Leverages PyNNDescent for approximate nearest neighbor search in high dimensions
-- 🎯 **Focused**: Single algorithm (RankOD) optimized for high-dimensional outlier detection
-- 🔬 **Scikit-learn Compatible**: Follows sklearn API conventions (`fit`, `predict`, `score_samples`)
-- ⚡ **Numba-accelerated**: Critical loops optimized with Numba JIT compilation
-- 🛠️ **Flexible**: Supports multiple kernel functions (harmonic, inverse sqrt, Gaussian, custom)
-
 ## Installation
 
 ### From PyPI (when released)

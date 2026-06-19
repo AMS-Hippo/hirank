@@ -46,8 +46,8 @@ coverage.xml
 .pytest_cache/
 
 # Sphinx documentation
-docs/_build/
-docs/generated/
+doc/_build/
+doc/generated/
 
 # Jupyter Notebook
 .ipynb_checkpoints
