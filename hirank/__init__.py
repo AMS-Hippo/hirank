@@ -10,4 +10,13 @@ __version__ = "0.1.1"
 
 from hirank.rankod import RankOD
 
-__all__ = ["RankOD"]
+__all__ = ["RankOD", "KNNOD"]
+
+
+def __getattr__(name):
+    """Lazily expose KNNOD without changing RankOD's import path or cost."""
+    if name == "KNNOD":
+        from hirank.knnod import KNNOD
+
+        return KNNOD
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

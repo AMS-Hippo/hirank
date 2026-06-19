@@ -64,6 +64,7 @@ Documentation
 
    installation
    mnist_ood_detection
+   knnood
 
 .. toctree::
    :maxdepth: 1
