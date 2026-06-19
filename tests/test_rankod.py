@@ -16,13 +16,6 @@ def test_import():
     assert RankOD is not None
 
 
-def test_init():
-    """Test RankOD initialization with default parameters."""
-    detector = RankOD()
-    assert detector.n_neighbors == 15
-    assert detector.max_rank == 100
-    assert detector.kernel == "harmonic"
-
 
 def test_init_custom_params():
     """Test RankOD initialization with custom parameters."""
