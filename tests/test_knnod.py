@@ -41,6 +41,137 @@ def _rbda_training_scores(X, k):
     return scores
 
 
+
+
+def test_default_ann_path_is_fixed_width_and_no_tie():
+    detector = KNNOD()
+    assert detector.exact is False
+    assert detector.include_ties is False
+    assert detector.tie_buffer == 0
+
+
+def test_fixed_width_fast_path_skips_variable_row_helpers(monkeypatch):
+    import hirank.knnod as knnod_module
+
+    class ExactLikeNNDescent:
+        def __init__(
+            self,
+            X,
+            metric="euclidean",
+            metric_kwds=None,
+            n_neighbors=15,
+            n_jobs=-1,
+            random_state=None,
+            verbose=False,
+        ):
+            del n_jobs, random_state, verbose
+            self.X = np.asarray(X)
+            self.metric = metric
+            self.metric_kwds = metric_kwds or {}
+            self.n_neighbors = int(n_neighbors)
+            distances = pairwise_distances(
+                self.X, self.X, metric=self.metric, **self.metric_kwds
+            )
+            order = np.argsort(distances, axis=1, kind="mergesort")
+            rows = np.arange(self.X.shape[0])[:, None]
+            self.neighbor_graph = (
+                order[:, : self.n_neighbors],
+                distances[rows, order][:, : self.n_neighbors],
+            )
+
+        def query(self, X, k=10, epsilon=0.1):
+            del epsilon
+            distances = pairwise_distances(
+                np.asarray(X), self.X, metric=self.metric, **self.metric_kwds
+            )
+            order = np.argsort(distances, axis=1, kind="mergesort")[:, :k]
+            rows = np.arange(order.shape[0])[:, None]
+            return order, distances[rows, order]
+
+    def fail(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("the variable-width helper was used")
+
+    monkeypatch.setattr(knnod_module, "NNDescent", ExactLikeNNDescent)
+    monkeypatch.setattr(KNNOD, "_pack_neighbor_rows", staticmethod(fail))
+    monkeypatch.setattr(KNNOD, "_matched_fit_scores", fail)
+
+    rng = np.random.default_rng(96)
+    X = rng.normal(size=(30, 5))
+    Q = rng.normal(size=(4, 5))
+    detector = KNNOD(
+        mode="rank",
+        method="harmonic",
+        n_neighbors=4,
+        max_rank=12,
+        rank_reference="query",
+        exact=False,
+        n_jobs=1,
+    ).fit(X)
+    scores = detector.score_samples(Q)
+    assert scores.shape == (Q.shape[0],)
+    assert detector._uses_fixed_width_fast_path()
+
+
+def test_fixed_width_fast_path_rejects_incomplete_ann_rows(monkeypatch):
+    import hirank.knnod as knnod_module
+
+    class IncompleteQueryNNDescent:
+        def __init__(
+            self,
+            X,
+            metric="euclidean",
+            metric_kwds=None,
+            n_neighbors=15,
+            n_jobs=-1,
+            random_state=None,
+            verbose=False,
+        ):
+            del n_jobs, random_state, verbose
+            self.X = np.asarray(X)
+            self.metric = metric
+            self.metric_kwds = metric_kwds or {}
+            self.n_neighbors = int(n_neighbors)
+            distances = pairwise_distances(
+                self.X, self.X, metric=self.metric, **self.metric_kwds
+            )
+            order = np.argsort(distances, axis=1, kind="mergesort")
+            rows = np.arange(self.X.shape[0])[:, None]
+            self.neighbor_graph = (
+                order[:, : self.n_neighbors],
+                distances[rows, order][:, : self.n_neighbors],
+            )
+
+        def query(self, X, k=10, epsilon=0.1):
+            del epsilon
+            distances = pairwise_distances(
+                np.asarray(X), self.X, metric=self.metric, **self.metric_kwds
+            )
+            order = np.argsort(distances, axis=1, kind="mergesort")[:, :k]
+            rows = np.arange(order.shape[0])[:, None]
+            selected = distances[rows, order]
+            order = order.copy()
+            selected = selected.copy()
+            order[0, -1] = -1
+            selected[0, -1] = np.inf
+            return order, selected
+
+    monkeypatch.setattr(knnod_module, "NNDescent", IncompleteQueryNNDescent)
+    rng = np.random.default_rng(97)
+    X = rng.normal(size=(24, 4))
+    Q = rng.normal(size=(3, 4))
+    detector = KNNOD(
+        mode="ecdf",
+        calibration="global",
+        n_neighbors=4,
+        exact=False,
+        n_jobs=1,
+    ).fit(X)
+
+    with pytest.raises(RuntimeError, match="incomplete ANN result"):
+        detector.score_samples(Q)
+
+
 def test_rank_mode_defaults_to_rbda_and_matches_exact_oracle():
     X = np.array([[0.0], [0.7], [2.0], [4.5], [8.0], [13.0]])
     detector = KNNOD(

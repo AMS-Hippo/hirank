@@ -160,16 +160,16 @@ class KNNOD(OutlierMixin, BaseEstimator):
         improve the recall of graph-referenced reverse ranks at extra fit-time
         and memory cost.  It is ignored outside approximate rank mode.
 
-    include_ties : bool, default=True
-        Include every kth-distance tie visible in the returned candidate row.
-        Approximate mode is best effort: it can include only ties returned by
-        the ANN query/graph.  Exact mode sees the complete reference row.
+    include_ties : bool, default=False
+        If True, include every kth-distance tie visible in the returned
+        candidate row.  This opts into the slower variable-width neighbour
+        path.  Approximate mode can include only ties returned by the ANN
+        query/graph; exact mode sees the complete reference row.
 
-    tie_buffer : int, default=1
+    tie_buffer : int, default=0
         Extra ANN candidates requested for best-effort boundary-tie inclusion.
         Increase this only when ties are plausible.  Rank queries always retain
-        the legacy ``k + 1`` search cushion; in rank mode, zero disables only
-        tie-specific candidates beyond that cushion.
+        the legacy ``k + 1`` search cushion independently of this setting.
 
     tie_tolerance : float, default=0.0
         Relative/absolute tolerance added to the kth distance when identifying
@@ -248,8 +248,8 @@ class KNNOD(OutlierMixin, BaseEstimator):
         exact: bool = False,
         rank_reference: str = "graph",
         rank_graph_multiplier: float = 1.0,
-        include_ties: bool = True,
-        tie_buffer: int = 1,
+        include_ties: bool = False,
+        tie_buffer: int = 0,
         tie_tolerance: float = 0.0,
         precompute_neighbors: bool = False,
         dtype=np.float64,
@@ -389,20 +389,32 @@ class KNNOD(OutlierMixin, BaseEstimator):
             indices, distances, counts = self._query_neighbor_arrays(
                 X_query, query_base, context="query neighbours"
             )
-            matched_rows, matched_scores = self._matched_fit_scores(
-                X_query, indices, distances
-            )
-            (
-                score_indices,
-                score_distances,
-                score_counts,
-            ) = self._truncate_neighbor_arrays(
-                indices,
-                distances,
-                counts,
-                self.effective_n_neighbors_,
-                context="query n_neighbors",
-            )
+            use_matched_fit_scores = not self._uses_fixed_width_fast_path()
+            if use_matched_fit_scores:
+                matched_rows, matched_scores = self._matched_fit_scores(
+                    X_query, indices, distances
+                )
+            if (
+                self._uses_fixed_width_fast_path()
+                and int(query_base) == int(self.effective_n_neighbors_)
+            ):
+                score_indices, score_distances, score_counts = (
+                    indices,
+                    distances,
+                    counts,
+                )
+            else:
+                (
+                    score_indices,
+                    score_distances,
+                    score_counts,
+                ) = self._truncate_neighbor_arrays(
+                    indices,
+                    distances,
+                    counts,
+                    self.effective_n_neighbors_,
+                    context="query n_neighbors",
+                )
 
             if self.mode_ == "sun":
                 valid_scores = self._sun_scores(score_distances, score_counts)
@@ -419,13 +431,20 @@ class KNNOD(OutlierMixin, BaseEstimator):
                 if self.calibration == "global":
                     valid_scores = self._global_ecdf_probabilities(raw)
                 else:
-                    cal_indices, _, cal_counts = self._truncate_neighbor_arrays(
-                        indices,
-                        distances,
-                        counts,
-                        self.effective_calibration_neighbors_,
-                        context="query calibration_neighbors",
-                    )
+                    if (
+                        self._uses_fixed_width_fast_path()
+                        and int(query_base)
+                        == int(self.effective_calibration_neighbors_)
+                    ):
+                        cal_indices, cal_counts = indices, counts
+                    else:
+                        cal_indices, _, cal_counts = self._truncate_neighbor_arrays(
+                            indices,
+                            distances,
+                            counts,
+                            self.effective_calibration_neighbors_,
+                            context="query calibration_neighbors",
+                        )
                     valid_scores = local_ecdf_inlier_probabilities(
                         raw,
                         cal_indices,
@@ -433,7 +452,7 @@ class KNNOD(OutlierMixin, BaseEstimator):
                         self.training_raw_scores_,
                     )
 
-            if np.any(matched_rows):
+            if use_matched_fit_scores and np.any(matched_rows):
                 valid_scores[matched_rows] = matched_scores[matched_rows]
             high_inlier_scores[valid_mask] = valid_scores
 
@@ -649,6 +668,15 @@ class KNNOD(OutlierMixin, BaseEstimator):
         else:
             self.effective_max_rank_ = None
 
+    def _uses_fixed_width_fast_path(self):
+        """Use the RankOD-like fixed-width path for ordinary ANN scoring.
+
+        The default approximate, no-tie configuration assumes the backend
+        returns complete sorted rows, just as legacy ``RankOD`` does.  Exact or
+        tie-aware configurations retain the careful variable-width machinery.
+        """
+        return not self.exact and not self.include_ties
+
     def _uses_boundary_ties(self):
         if not self.include_ties:
             return False
@@ -741,10 +769,24 @@ class KNNOD(OutlierMixin, BaseEstimator):
         self.index_n_neighbors_ = int(index_width)
         self.effective_query_epsilon_ = self._backend_query_epsilon()
         graph_indices, graph_distances = self.index_.neighbor_graph
-        self._graph_indices_ = np.asarray(graph_indices, dtype=np.int64)
-        self._graph_distances_ = np.asarray(graph_distances, dtype=np.float64)
-        rows = np.arange(self._graph_indices_.shape[0])[:, None]
-        self._row_has_self_ = np.any(self._graph_indices_ == rows, axis=1)
+        # Keep the backend arrays by reference.  The fixed-width fast path
+        # should not pay for full graph dtype conversions merely to score a
+        # small number of neighbours.
+        self._graph_indices_ = np.asarray(graph_indices)
+        self._graph_distances_ = np.asarray(graph_distances)
+
+        # Only graph-referenced, non-precomputed rank scoring needs to know
+        # whether each stored row contains self.  Query-referenced RankOD-like
+        # scoring should not scan the full graph for an unused attribute.
+        if (
+            self.mode_ == "rank"
+            and self.rank_reference_ == "graph"
+            and not self.precompute_neighbors
+        ):
+            rows = np.arange(self._graph_indices_.shape[0])[:, None]
+            self._row_has_self_ = np.any(self._graph_indices_ == rows, axis=1)
+        else:
+            self._row_has_self_ = None
 
     def _query_index(self, X, k):
         """Query the backend with the same default convention as RankOD.
@@ -782,6 +824,22 @@ class KNNOD(OutlierMixin, BaseEstimator):
             return None
 
     def _reduce_sizes_from_graph(self):
+        if self._uses_fixed_width_fast_path():
+            # Actual fixed-width consumers validate their own slices.  The one
+            # exception is lazy graph-referenced rank scoring, which binary-
+            # searches through J graph distances without first materializing a
+            # J-wide table.
+            if (
+                self.mode_ == "rank"
+                and self.rank_reference_ == "graph"
+                and not self.precompute_neighbors
+            ):
+                self._fixed_fit_graph_rows(
+                    self.effective_max_rank_,
+                    context="rank-reference neighbour graph",
+                )
+            return
+
         valid_counts = np.empty(self._n_training_samples_, dtype=int)
         for i in range(self._n_training_samples_):
             indices = self._graph_indices_[i]
@@ -817,6 +875,14 @@ class KNNOD(OutlierMixin, BaseEstimator):
 
     def _precompute_rank_rows(self):
         width = int(self.effective_max_rank_)
+        if self._uses_fixed_width_fast_path():
+            neighbors, distances, _ = self._fixed_fit_graph_rows(
+                width, context="precomputed rank-reference graph"
+            )
+            self._training_neighbors_ = neighbors
+            self._training_distances_ = distances
+            return
+
         neighbors = np.empty((self._n_training_samples_, width), dtype=np.int64)
         distances = np.empty((self._n_training_samples_, width), dtype=np.float64)
         for i in range(self._n_training_samples_):
@@ -829,11 +895,23 @@ class KNNOD(OutlierMixin, BaseEstimator):
     def _fit_rank_query_neighbor_arrays(self, base_k, context):
         """Return legacy-style fit neighbours obtained through ``query``.
 
-        Training queries request one self candidate in addition to ``k``.
-        Visible boundary ties can request further candidates through
-        ``tie_buffer``.  Self rows are removed by index rather than by assuming
-        that the first zero-distance result is the fitted observation.
+        The default fixed-width path deliberately mirrors ``RankOD``: request
+        ``k + 1`` candidates and drop the first column as self.  Exact/tie-aware
+        configurations retain index-based self removal and variable rows.
         """
+        if self._uses_fixed_width_fast_path():
+            request_k = min(self._n_training_samples_, int(base_k) + 1)
+            raw_indices, raw_distances = self._query_index(
+                self._training_data_, k=request_k
+            )
+            return self._fixed_width_rows(
+                raw_indices,
+                raw_distances,
+                int(base_k),
+                context=context,
+                start=1,
+            )
+
         uses_ties = self._uses_boundary_ties()
         if self.exact and uses_ties:
             request_k = self._n_training_samples_
@@ -893,6 +971,8 @@ class KNNOD(OutlierMixin, BaseEstimator):
         """
         if self.precompute_neighbors:
             reference_ids = np.arange(self._n_training_samples_, dtype=np.int64)
+        elif self._uses_fixed_width_fast_path():
+            reference_ids = np.unique(score_indices.ravel()).astype(np.int64)
         else:
             valid_centers = [
                 score_indices[i, : int(score_counts[i])]
@@ -915,15 +995,28 @@ class KNNOD(OutlierMixin, BaseEstimator):
     def _query_rank_reference_rows(self, reference_ids, allow_rank_reduction=False):
         """Query non-self reference rows used for reverse-rank lookup.
 
-        Rows are packed to the common fitted rank depth.  A post-fit shortage is
-        represented conservatively: the last observed distance is repeated so
-        any larger query distance enters the ``J + 1`` overflow bucket.
+        The default approximate path requests ``J + 1`` and drops the first
+        result exactly as ``RankOD`` does.  The careful path can reduce or pad
+        incomplete rows for explicit exact/tie-aware configurations.
         """
         reference_ids = np.asarray(reference_ids, dtype=np.int64)
         if reference_ids.ndim != 1 or reference_ids.size == 0:
             raise ValueError("reference_ids must be a nonempty one-dimensional array.")
 
         requested_rank = int(self.effective_max_rank_)
+        if self._uses_fixed_width_fast_path():
+            request_k = min(self._n_training_samples_, requested_rank + 1)
+            raw_indices, raw_distances = self._query_index(
+                self._training_data_[reference_ids], k=request_k
+            )
+            return self._fixed_width_rows(
+                raw_indices,
+                raw_distances,
+                requested_rank,
+                context="query-derived rank-reference rows",
+                start=1,
+            )
+
         request_k = min(self._n_training_samples_, requested_rank + 1)
         raw_indices, raw_distances = self._query_index(
             self._training_data_[reference_ids], k=request_k
@@ -981,33 +1074,95 @@ class KNNOD(OutlierMixin, BaseEstimator):
             return indices, self._training_distances_
         if hasattr(self, "_fit_query_reference_distances_"):
             reference_ids = self._fit_query_reference_ids_
+            if self._uses_fixed_width_fast_path():
+                local_indices = np.searchsorted(reference_ids, indices)
+            else:
+                local_indices = np.full_like(indices, -1)
+                for i in range(indices.shape[0]):
+                    count = int(counts[i])
+                    local_indices[i, :count] = np.searchsorted(
+                        reference_ids, indices[i, :count]
+                    )
+            return local_indices, self._fit_query_reference_distances_
+
+        if self._uses_fixed_width_fast_path():
+            reference_ids = np.unique(indices.ravel()).astype(np.int64)
+        else:
+            valid_centers = [
+                indices[i, : int(counts[i])] for i in range(indices.shape[0])
+            ]
+            reference_ids = np.unique(np.concatenate(valid_centers)).astype(np.int64)
+        _, reference_distances, _ = self._query_rank_reference_rows(
+            reference_ids, allow_rank_reduction=False
+        )
+
+        if self._uses_fixed_width_fast_path():
+            local_indices = np.searchsorted(reference_ids, indices)
+        else:
             local_indices = np.full_like(indices, -1)
             for i in range(indices.shape[0]):
                 count = int(counts[i])
                 local_indices[i, :count] = np.searchsorted(
                     reference_ids, indices[i, :count]
                 )
-            return local_indices, self._fit_query_reference_distances_
-
-        valid_centers = [
-            indices[i, : int(counts[i])] for i in range(indices.shape[0])
-        ]
-        reference_ids = np.unique(np.concatenate(valid_centers)).astype(np.int64)
-        _, reference_distances, _ = self._query_rank_reference_rows(
-            reference_ids, allow_rank_reduction=False
-        )
-
-        local_indices = np.full_like(indices, -1)
-        for i in range(indices.shape[0]):
-            count = int(counts[i])
-            local_indices[i, :count] = np.searchsorted(
-                reference_ids, indices[i, :count]
-            )
         return local_indices, reference_distances
 
     # ------------------------------------------------------------------
     # Neighbour selection and tie handling
     # ------------------------------------------------------------------
+    def _fixed_width_rows(
+        self, indices, distances, width, context, start=0
+    ):
+        """Return a validated fixed-width view and constant row counts.
+
+        This is the ordinary approximate path.  It intentionally avoids
+        per-row filtering, packing, and automatic reductions.  ``start=1``
+        mirrors RankOD's convention that the first result of a fitted-row query
+        is self.
+        """
+        indices = np.asarray(indices)
+        distances = np.asarray(distances)
+        width = int(width)
+        start = int(start)
+        stop = start + width
+
+        if (
+            indices.ndim != 2
+            or distances.ndim != 2
+            or indices.shape != distances.shape
+            or indices.shape[1] < stop
+        ):
+            raise RuntimeError(
+                f"KNNOD expected {width} fixed-width neighbours for {context}, "
+                f"but the backend returned shapes {indices.shape} and "
+                f"{distances.shape}. Increase query_epsilon, rebuild with a "
+                "wider graph, or use exact=True for problematic data."
+            )
+
+        selected_indices = indices[:, start:stop]
+        selected_distances = distances[:, start:stop]
+        if np.any(selected_indices < 0) or not np.all(
+            np.isfinite(selected_distances)
+        ):
+            raise RuntimeError(
+                f"KNNOD received an incomplete ANN result for {context}. "
+                "Increase query_epsilon, rebuild with a wider graph, or use "
+                "exact=True rather than silently changing k or max_rank."
+            )
+
+        counts = np.full(selected_indices.shape[0], width, dtype=np.int64)
+        return selected_indices, selected_distances, counts
+
+    def _fixed_fit_graph_rows(self, width, context):
+        """Take non-self fixed-width rows from the fitted neighbour graph."""
+        return self._fixed_width_rows(
+            self._graph_indices_,
+            self._graph_distances_,
+            width,
+            context=context,
+            start=1,
+        )
+
     def _clean_fit_graph_row(self, i):
         indices = self._graph_indices_[i]
         distances = self._graph_distances_[i]
@@ -1038,6 +1193,9 @@ class KNNOD(OutlierMixin, BaseEstimator):
         return count
 
     def _fit_neighbor_arrays(self, base_k, context):
+        if self._uses_fixed_width_fast_path():
+            return self._fixed_fit_graph_rows(int(base_k), context=context)
+
         rows = []
         max_count = 0
         for i in range(self._n_training_samples_):
@@ -1052,6 +1210,20 @@ class KNNOD(OutlierMixin, BaseEstimator):
         return self._pack_neighbor_rows(rows, max_count)
 
     def _query_neighbor_arrays(self, X, base_k, context):
+        if self._uses_fixed_width_fast_path():
+            extra = 1 if self.mode_ == "rank" else 0
+            request_k = min(
+                self._n_training_samples_, int(base_k) + extra
+            )
+            indices, distances = self._query_index(X, k=request_k)
+            return self._fixed_width_rows(
+                indices,
+                distances,
+                int(base_k),
+                context=context,
+                start=0,
+            )
+
         uses_ties = self._uses_boundary_ties()
         if self.exact and uses_ties:
             request_k = self._n_training_samples_
@@ -1097,6 +1269,16 @@ class KNNOD(OutlierMixin, BaseEstimator):
     def _truncate_neighbor_arrays(
         self, indices, distances, counts, base_k, context
     ):
+        if self._uses_fixed_width_fast_path():
+            del counts
+            return self._fixed_width_rows(
+                indices,
+                distances,
+                int(base_k),
+                context=context,
+                start=0,
+            )
+
         rows = []
         max_count = 0
         for i in range(indices.shape[0]):
