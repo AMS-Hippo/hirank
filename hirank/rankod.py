@@ -372,6 +372,10 @@ class RankOD(OutlierMixin, BaseEstimator):
         """
         X = validate_data(self, X, accept_sparse=False, dtype=self.dtype, reset=True)
         if self.score == "sun":
+            if self.metric != "euclidean":
+                raise ValueError(
+                    "Sun score requires euclidean metric. Try setting score to rank or metric to euclidean."
+                )
             X = row_normalize(X)
         n_samples, n_features = X.shape
 
@@ -651,7 +655,12 @@ class RankOD(OutlierMixin, BaseEstimator):
         knn_indices,
         knn_distances,
     ):
-        return knn_distances[:, -1]  # just the distance to the kth nn
+        scores = knn_distances[:, -1]  # just the distance to knn
+        # euclidean distance between L2 normed vectors
+        # are in [0,2], so divide by 2 to normalize.
+        # and reverse so bigger distance is smaller score
+        scores = 1 - (scores / 2)
+        return scores
 
     def _compute_rank_scores(
         self,
