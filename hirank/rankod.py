@@ -72,6 +72,17 @@ def gaussian_kernel(ranks: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     return np.exp(-(ranks**2) / (2.0 * sigma**2))
 
 
+def row_normalize(X):
+    """
+    Row normalize 2d numpy or scipy arrays.
+    """
+    # Easier to transpose since stuff operates columnwise by default
+    X = X.transpose()
+    X = X / X.sum(axis=0)
+    X = X.transpose()
+    return X
+
+
 @njit  # TODO cache=True breaks something?
 def build_row_map(neighbors):
     # This needs to be njitted to get a numba Typed dict
@@ -122,6 +133,59 @@ def compute_reverse_ranks(
     return reverse_ranks
 
 
+@njit(cache=True)
+def ecdf_scores(
+    training_raw_scores,
+    raw_scores,
+):
+    """
+    Transform raw scores into ECDF scores. Do not insert the
+    raw scores before computing the ECDF. The ECDF value of
+    each raw score is the proportion of training raw scores
+    that are smaller.
+
+    Parameters
+    ----------
+    training_raw_scores: np.ndarray
+        A 1d array of the raw scores from the training data.
+
+    raw_scores: np.ndarray
+        A 1d array of raw scores for which to compute the ecdfs.
+
+    """
+    sorted_scores = np.sort(training_raw_scores)
+    insert_index = np.searchsorted(sorted_scores, raw_scores)
+    ecdfs = insert_index / len(training_raw_scores)
+    return ecdfs
+
+
+@njit(cache=True)
+def local_ecdf_scores(knn_indices, training_raw_scores, raw_scores):
+    """
+    Transform raw scores into local ECDF scores. Do not insert the
+    raw scores before computing the ECDF.
+
+    Parameters
+    ----------
+    knn_indices : np.ndarray
+        Each row denotes the indices of the nearest neighbors of the
+        score in the correspoing raw_scores array. Used to get the
+        local scores from training_raw_scores.
+
+    training_raw_scores : np.ndarray
+        A 1d array of the raw scores from the training data.
+
+    raw_scores : np.ndarray
+        A 1d array of the raw scores from the predict data.
+    """
+    ecdfs = np.empty_like(raw_scores, dtype=np.float64)
+    for i in prange(len(raw_scores)):
+        raw_score = raw_scores[i : i + 1]  # Return as len 1 array
+        local_raw_scores = training_raw_scores[knn_indices[i]]
+        ecdfs[i] = ecdf_scores(local_raw_scores, raw_score)[0]
+    return ecdfs
+
+
 class RankOD(OutlierMixin, BaseEstimator):
     """
     Rank-based Outlier Detection using Reverse k-NN Density Estimation.
@@ -147,9 +211,25 @@ class RankOD(OutlierMixin, BaseEstimator):
         Expected proportion of outliers in the dataset.
         Used to set the threshold for binary classification in predict().
 
+    score : str, default="rank"
+        Which score to compute.
+
+        - "rank": raw scores are the average kerneled reverse rank.
+        - "sun": raw scores are the distance to the n_neighbors nearest
+          neighbors after L2 normalization.
+
+    calibration : str | None
+        Method for calibrating raw scores.
+
+        - "local": Returned scores are calibrated locally using the empirical
+          cumulative distribution function of the nearest n_neighbors.
+        - "global": Returned scores are calibrated using the empirical
+          cumulative distribution function of all the training data.
+        - "raw" or None: Return the raw scores.
+
     reverse_scores : bool, default=False
         Flag to reverse the scores so that higher scores are more likely to be outliers.
-    
+
     precompute_neighbors : bool, default=False
         Whether to pre-compute and store max_rank nearest neighbors for all training points.
 
@@ -172,7 +252,7 @@ class RankOD(OutlierMixin, BaseEstimator):
 
     kernel : {'harmonic', 'inverse_sqrt', 'gaussian'} or callable, default='inverse_sqrt'
         Kernel function to apply to ranks:
-        
+
         - 'harmonic': k(r) = 1/r
         - 'inverse_sqrt': k(r) = 1/sqrt(r)
         - 'gaussian': k(r) = exp(-r^2 / (2*sigma^2))
@@ -203,7 +283,7 @@ class RankOD(OutlierMixin, BaseEstimator):
     outlier_scores_ : np.ndarray of shape (n_samples,)
         Outlier scores for training samples, normalized to [0, 1] range.
         Lower values indicate outliers.
-    
+
     offset_ : float
         Learned threshold to set the specified proportion of training data
         (as defined by the contamination parameter) to be outliers. Calling
@@ -243,6 +323,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         n_neighbors: int = 15,
         max_rank: int = 100,
         contamination: float = 0.1,
+        score: str = "rank",
+        calibration: str | None = None,
         reverse_scores: bool = False,
         precompute_neighbors: bool = False,
         dtype=np.float64,
@@ -257,6 +339,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         self.n_neighbors = n_neighbors
         self.max_rank = max_rank
         self.contamination = contamination
+        self.score = score
+        self.calibration = calibration
         self.reverse_scores = reverse_scores
         self.precompute_neighbors = precompute_neighbors
         self.dtype = dtype  # Store as-is for sklearn compatibility
@@ -287,6 +371,8 @@ class RankOD(OutlierMixin, BaseEstimator):
 
         """
         X = validate_data(self, X, accept_sparse=False, dtype=self.dtype, reset=True)
+        if self.score == "sun":
+            X = row_normalize(X)
         n_samples, n_features = X.shape
 
         if self.n_neighbors >= n_samples:
@@ -311,8 +397,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         )
 
         training_neighbors, training_distances = self.index_.neighbor_graph
-        training_neighbors = training_neighbors[:, 1:] # Exclude self
-        training_distances = training_distances[:, 1:] # Exclude self
+        training_neighbors = training_neighbors[:, 1:]  # Exclude self
+        training_distances = training_distances[:, 1:]  # Exclude self
         # Optionally store training data neighbors for reverse rank computation
         if self.precompute_neighbors:
             if self.verbose:
@@ -334,10 +420,10 @@ class RankOD(OutlierMixin, BaseEstimator):
 
         # sklearn default is inlier scores
         self.outlier_scores_ = self._compute_scores(
-            training_neighbors[:, :self.n_neighbors],
-            training_distances[:, :self.n_neighbors],
+            training_neighbors[:, : self.n_neighbors],
+            training_distances[:, : self.n_neighbors],
             training_distances,
-            is_training=True
+            is_training=True,
         )
         # Save offset
         self.offset_ = self._compute_offset(self.outlier_scores_)
@@ -372,19 +458,24 @@ class RankOD(OutlierMixin, BaseEstimator):
         if X.ndim == 1:
             X = X.reshape(1, -1)
         X = validate_data(self, X, accept_sparse=False, dtype=self.dtype, reset=False)
-
-        # TODO check this works, add flag to override and recompute
+        if self.score == "sun":
+            X = row_normalize(X)
         # Check if this is the training data (quick heuristic)
         if hasattr(self, "outlier_scores_") and X.shape[0] == len(self.outlier_scores_):
             # Try to detect if this is training data by checking first few points
-            test_indices, _ = self.index_.query(X[: min(5, len(X))], k=1)
-            if np.all(test_indices[:, 0] == np.arange(min(5, len(X)))):
+            n_rows_to_check = min(5, X.shape[0], self._training_data_.shape[0])
+            if X.shape[0] == self._training_data_.shape[0] and np.all(
+                np.asarray(X[n_rows_to_check, :])
+                == np.asarray(self._training_data_[n_rows_to_check, :])
+            ):
                 # This appears to be training data, return cached scores
                 return self.outlier_scores_
 
         # For new test data, compute using proper reverse k-NN with distance comparisons
         knn_indices, knn_distances = self.index_.query(X, k=self.n_neighbors)
-        outlier_scores = self._compute_scores(knn_indices, knn_distances, is_training=False)
+        outlier_scores = self._compute_scores(
+            knn_indices, knn_distances, is_training=False
+        )
         return outlier_scores
 
     def decision_function(self, X, contamination: float | None = None):
@@ -426,7 +517,9 @@ class RankOD(OutlierMixin, BaseEstimator):
         """
         decision_scores = self.decision_function(X, contamination=contamination)
         predictions = np.full_like(decision_scores, 1, dtype="int")
-        outliers = (decision_scores >= 0) if self.reverse_scores else (decision_scores <= 0)
+        outliers = (
+            (decision_scores >= 0) if self.reverse_scores else (decision_scores <= 0)
+        )
         predictions[outliers] = -1
         return predictions
 
@@ -450,7 +543,11 @@ class RankOD(OutlierMixin, BaseEstimator):
         """
         self.fit(X)
         prediction = np.full_like(self.outlier_scores_, 1, dtype="int")
-        outliers = self.outlier_scores_ >= self.offset_ if self.reverse_scores else self.outlier_scores_ <= self.offset_
+        outliers = (
+            self.outlier_scores_ >= self.offset_
+            if self.reverse_scores
+            else self.outlier_scores_ <= self.offset_
+        )
         prediction[outliers] = -1
         return prediction
 
@@ -476,8 +573,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         knn_indices: np.ndarray,
         knn_distances: np.ndarray,
         neighbor_nn_distances: np.ndarray | None = None,
-        is_training: bool = False
-
+        is_training: bool = False,
     ) -> np.ndarray:
         """
         Compute outlier scores for given data.
@@ -503,11 +599,67 @@ class RankOD(OutlierMixin, BaseEstimator):
             Outlier scores (lower = more outlier).
 
         """
-        kernel_func = self._get_kernel_function()
         # Get n_neighbors-nearest neighbors for each point from the training index
-        knn_indices = knn_indices[:, :self.n_neighbors]  # Take first n_neighbors neighbors
-        knn_distances = knn_distances[:, :self.n_neighbors]  # Take first n_neighbors neighbors
+        knn_indices = knn_indices[
+            :, : self.n_neighbors
+        ]  # Take first n_neighbors neighbors
+        knn_distances = knn_distances[
+            :, : self.n_neighbors
+        ]  # Take first n_neighbors neighbors
 
+        # Compute Scores
+        if self.score == "rank":
+            raw_scores = self._compute_rank_scores(
+                knn_indices, knn_distances, neighbor_nn_distances
+            )
+        elif self.score == "sun":
+            raw_scores = self._compute_sun_scores(knn_indices, knn_distances)
+        else:
+            raise ValueError(f"Score must be one of 'rank' or 'sun'. Got {self.score}")
+
+        # Calibrate Scores
+        if self.calibration == "raw" or self.calibration is None:
+            if is_training:
+                self._max_raw_score_ = np.max(raw_scores)
+                self._min_raw_score_ = np.min(raw_scores)
+            outlier_scores = (raw_scores - self._min_raw_score_) / (
+                self._max_raw_score_ - self._min_raw_score_
+            )
+        elif self.calibration == "local":
+            if is_training:
+                self._training_raw_scores_ = raw_scores
+            outlier_scores = local_ecdf_scores(
+                knn_indices, self._training_raw_scores_, raw_scores
+            )
+        elif self.calibration == "global":
+            if is_training:
+                self._training_raw_scores_ = raw_scores
+            outlier_scores = ecdf_scores(self._training_raw_scores_, raw_scores)
+
+        else:
+            raise ValueError(
+                f"Calibration must be 'local', 'global', 'raw' or None. Got {self.calibration}"
+            )
+
+        if self.reverse_scores:
+            outlier_scores = 1 - outlier_scores
+
+        return outlier_scores
+
+    def _compute_sun_scores(
+        self,
+        knn_indices,
+        knn_distances,
+    ):
+        return knn_distances[:, -1]  # just the distance to the kth nn
+
+    def _compute_rank_scores(
+        self,
+        knn_indices,
+        knn_distances,
+        neighbor_nn_distances=None,
+    ):
+        kernel_func = self._get_kernel_function()
         # Compute the nearest neighbors of the ranked neighbors
         if neighbor_nn_distances is not None:
             row_map = None
@@ -521,29 +673,12 @@ class RankOD(OutlierMixin, BaseEstimator):
                 self._training_data_[nns], k=self.max_rank + 1
             )
             neighbor_nn_distances = neighbor_nn_distances[:, 1:]  # Exclude self
-
         reverse_ranks = compute_reverse_ranks(
             knn_indices, knn_distances, neighbor_nn_distances, row_map=row_map
         )
-
-        # TODO factor out and implement more methods
         kernel_values = kernel_func(reverse_ranks)
-        raw_scores = np.sum(kernel_values, axis=1)
-
-        # Normalize to [0, 1] range for interpretability
-        if is_training:
-            self.max_raw_score_ = self.n_neighbors * kernel_func(np.array([1.0]))[0]
-            self.min_raw_score_ = (
-                self.n_neighbors * kernel_func(np.array([float(self.max_rank)]))[0]
-            )
-        outlier_scores = (raw_scores - self.min_raw_score_) / (
-            self.max_raw_score_ - self.min_raw_score_
-        )
-
-        if self.reverse_scores:
-            outlier_scores = 1 - outlier_scores
-
-        return outlier_scores
+        scores = np.mean(kernel_values, axis=1)
+        return scores
 
     def _compute_offset(self, scores, contamination: float | None = None) -> float:
         """Get the decision threshold"""
