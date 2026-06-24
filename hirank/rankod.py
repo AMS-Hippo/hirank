@@ -34,6 +34,25 @@ def harmonic_kernel(ranks: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True)
+def inverse_log_kernel(ranks: np.ndarray) -> np.ndarray:
+    """
+    Harmonic kernel function: k(r) = 1/r
+
+    Parameters
+    ----------
+    ranks : np.ndarray
+        Array of ranks (1-indexed)
+
+    Returns
+    -------
+    np.ndarray
+        Kernel values
+
+    """
+    return 1.0 / np.log2(ranks + 1) # + 1 since log(1)=0
+
+
+@njit(cache=True)
 def inverse_sqrt_kernel(ranks: np.ndarray) -> np.ndarray:
     """
     Inverse square root kernel: k(r) = 1/sqrt(r)
@@ -250,6 +269,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         Kernel function to apply to ranks:
 
         - 'harmonic': k(r) = 1/r
+        - 'inverse_log': k(r) = 1/log_2(r+1)
         - 'inverse_sqrt': k(r) = 1/sqrt(r)
         - 'gaussian': k(r) = exp(-r^2 / (2*sigma^2))
         - callable: custom kernel function taking ranks array and returning weights
@@ -555,6 +575,8 @@ class RankOD(OutlierMixin, BaseEstimator):
             return self.kernel
         elif self.kernel == "harmonic":
             return harmonic_kernel
+        elif self.kernel == "inverse_log":
+            return inverse_log_kernel
         elif self.kernel == "inverse_sqrt":
             return inverse_sqrt_kernel
         elif self.kernel == "gaussian":
