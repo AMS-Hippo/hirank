@@ -64,6 +64,8 @@ Documentation
 
    installation
    mnist_ood_detection
+   performance
+   scaling
 
 .. toctree::
    :maxdepth: 1

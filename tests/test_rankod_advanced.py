@@ -102,7 +102,6 @@ class TestRankODKernels:
         assert np.all(np.isfinite(scores))
         assert np.all(scores >= 0)
 
-
     def test_custom_kernel(self):
         """Test with custom kernel function."""
         np.random.seed(42)

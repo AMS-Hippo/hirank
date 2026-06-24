@@ -180,7 +180,7 @@ class RankOD(OutlierMixin, BaseEstimator):
     n_neighbors : int, default=15
         Number of nearest neighbors to use for density estimation.
 
-    max_rank : int, default=100
+    max_rank : int, default=50
         Maximum rank to consider in reverse nearest neighbor search.
         Ranks beyond max_rank are capped at max_rank.
 
@@ -193,9 +193,9 @@ class RankOD(OutlierMixin, BaseEstimator):
 
         - "rank": raw scores are the average kerneled reverse rank.
         - "sun": raw scores are the distance to the n_neighbors nearest
-          neighbors after L2 normalization.
+          neighbor after L2 normalization.
 
-    calibration : str | None
+    calibration : {'local', 'global', 'raw'} or None, default=None
         Method for calibrating raw scores.
 
         - "local": Returned scores are calibrated locally using the empirical
@@ -227,7 +227,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         Note: PyNNDescent internally uses float32, so using np.float32 here
         avoids precision conversion and reduces memory footprint.
 
-    kernel : {'harmonic', 'inverse_sqrt', 'gaussian'} or callable, default='inverse_sqrt'
+    kernel : {'inverse_sqrt', 'linear'} or callable, default='inverse_sqrt'
         Kernel function to apply to ranks:
 
         - 'inverse_sqrt': k(r) = 1/sqrt(r)
@@ -236,7 +236,8 @@ class RankOD(OutlierMixin, BaseEstimator):
 
     metric : str, default='euclidean'
         Distance metric to use for nearest neighbor search.
-        See pynndescent documentation for available metrics.
+        See [pynndescent documentation](https://pynndescent.readthedocs.io/en/latest/pynndescent_metrics.html#Built-in-metrics)
+        for available metrics.
 
     metric_kwds : dict, optional
         Additional keyword arguments for the metric.
@@ -254,19 +255,13 @@ class RankOD(OutlierMixin, BaseEstimator):
     Attributes
     ----------
     outlier_scores_ : np.ndarray of shape (n_samples,)
-        Outlier scores for training samples, normalized to [0, 1] range.
+        Outlier scores for training samples range.
         Lower values indicate outliers.
 
     offset_ : float
         Learned threshold to set the specified proportion of training data
         (as defined by the contamination parameter) to be outliers. Calling
         predict on new data uses the learned threshold to make a decision.
-
-    max_raw_score_ : float
-        Maximum possible raw density score. Used for score normalization.
-
-    min_raw_score_ : float
-        Minimum possible raw density score. Used for score normalization.
 
     index_ : NNDescent
         Fitted nearest neighbor index.
@@ -278,23 +273,18 @@ class RankOD(OutlierMixin, BaseEstimator):
     --------
     >>> from hirank import RankOD
     >>> import numpy as np
-    >>> X = np.random.randn(100, 10)
+    >>> X = np.random.random((100, 30))
     >>> detector = RankOD(n_neighbors=15, max_rank=100)
     >>> detector.fit(X)
     >>> outlier_scores = detector.score_samples(X)
     >>> predictions = detector.predict(X)  # -1 for outliers, 1 for inliers
-
-    References
-    ----------
-    Based on reverse k-NN density estimation with kernel smoothing for
-    high-dimensional outlier detection.
 
     """
 
     def __init__(
         self,
         n_neighbors: int = 15,
-        max_rank: int = 100,
+        max_rank: int = 50,
         contamination: float = 0.1,
         mode: str = "rank",
         calibration: str | None = None,
@@ -360,8 +350,12 @@ class RankOD(OutlierMixin, BaseEstimator):
             print(
                 f"Building nearest neighbor index with n_neighbors={self.n_neighbors}..."
             )
-        
-        index_n_neighbors = self.n_neighbors if self.mode == "sun" else max(self.n_neighbors, self.max_rank) + 1
+
+        index_n_neighbors = (
+            self.n_neighbors
+            if self.mode == "sun"
+            else max(self.n_neighbors, self.max_rank) + 1
+        )
         self.index_ = NNDescent(
             X,
             metric=self.metric,
@@ -610,7 +604,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         knn_distances,
     ):
         """Compute Sun scores"""
-        scores = knn_distances[:, -1] 
+        scores = knn_distances[:, -1]
         # euclidean distance between L2 normed vectors
         # are in [0,2], so divide by 2 to normalize
         # and reverse so bigger distance is smaller score
@@ -637,7 +631,7 @@ class RankOD(OutlierMixin, BaseEstimator):
                 self._training_data_[nns], k=self.max_rank + 1
             )
             neighbor_nn_distances = neighbor_nn_distances[:, 1:]  # Exclude self
-        
+
         reverse_ranks = compute_reverse_ranks(
             knn_indices, knn_distances, neighbor_nn_distances, row_map=row_map
         )

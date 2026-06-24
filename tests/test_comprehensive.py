@@ -138,7 +138,6 @@ class TestKernelFunctions:
         X = np.vstack([X_normal, np.array(X_outliers)])
         return X, n_normal
 
-
     def test_inverse_sqrt_kernel(self, outlier_data):
         """Test inverse sqrt kernel."""
         X, n_normal = outlier_data

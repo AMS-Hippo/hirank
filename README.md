@@ -4,6 +4,9 @@
 
 HiRank is a tightly-scoped outlier detection library implementing reverse k-NN density estimation with kernel smoothing, optimized for high-dimensional data using PyNNDescent for efficient approximate nearest neighbor search.
 
+`RankOD` is a sci-kit learn compatible outlier class that can be a drop in replacement for 
+[`LocalOutlierFactor`](https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.LocalOutlierFactor.html) or [`IsolationForest`](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.IsolationForest.html).
+
 ## Installation
 
 ### From PyPI (when released)
@@ -67,20 +70,48 @@ labels_conservative = detector.predict(X, contamination=0.05)
 
 ## Algorithm
 
-RankOD uses **Reverse k-NN Density Estimation**:
+RankOD makes available two modes for evaluating outliers using k-nearest-neighbor queries, and three
+options to calibrate the computed scores.
+
+### `mode = 'rank'`
+The rank mode (which is used by default) is a tweaked version of the RBDA algorithm from the paper
+
+```
+Huang, H.; Mehrotra, Kishan; and Mohan, Chilukuri K., "Rank-Based Outlier Detection" (2011).
+Electrical Engineering and Computer Science - Technical Reports. 47.
+https://surface.syr.edu/eecs_techreports/47
+```
 
 1. For each point, compute its `n_neighbors` nearest neighbors
-2. For each neighbor, find the rank at which the point appears in that neighbor's `max_rank`-nearest neighbor list
-3. Apply a kernel function to smooth these ranks (default: harmonic kernel `k(r) = 1/r`)
-4. Sum the kernel values to estimate local density
-5. Normalize density to [0, 1] outlier score: `score = (max_density - density) / (max_density - min_density)`
+2. For each neighbor, find the rank at which the point would appear in that neighbor's `max_rank`-nearest neighbor list
+3. Apply a kernel function to smooth these ranks (default: inverse square root `k(r) = 1/sqrt(r)`)
+4. Average the kernel values to estimate local density
 
-**Key Parameters:**
-- `n_neighbors=15`: Number of nearest neighbors for density estimation
-- `max_rank=100`: Maximum rank to consider (ranks beyond max_rank are capped)
-- `kernel='harmonic'`: Kernel function (`'harmonic'`, `'inverse_sqrt'`, `'gaussian'`, or custom callable)
-- `precompute_neighbors=False`: Memory/speed tradeoff (see Performance section below)
-- `dtype=np.float64`: Data precision (float64 for sklearn compatibility, float32 for memory savings)
+### `mode = 'sun'`
+The sun mode uses the the distance to the kth nearest neighbor in a normalized space.
+```
+Yiyou Sun, Yifei Ming, Xiaojin Zhu, Yixuan Li.
+"Out-of-distribution Detection with Deep Nearest Neighbors" (2022)
+International Conference on Machine Learning, PMLR 162.
+https://proceedings.mlr.press/v162/sun22d/sun22d.pdf
+```
+
+*The sun mode is only available with `metric = 'euclidean'`*.
+
+1. L2 normalize the data.
+2. The score of each point is the euclidean distance to it's `n_neighbors` nearest neighbor. 
+
+### `calibration = 'global'`
+Compare the raw score of each point to the raw scores of the whole training set.
+Scores are normalized to that the distribution of the training set scores are
+uniform between 0 and 1.
+
+### `calibration = 'local'`
+Compare the raw score of each point to the scores of its `n_neighbors` nearest neighbors.
+
+### `calibration = 'raw'`
+Return raw (normalized) scores that are between 0 and 1.
+
 
 ## Performance and Scalability
 
@@ -92,11 +123,11 @@ RankOD provides two parameters to control memory usage:
 
 ```python
 # Standard precision (sklearn-compatible, default)
-detector = RankOD(n_neighbors=15, max_rank=100, dtype=np.float64)
+detector = RankOD(dtype=np.float64)
 # Memory: 8 bytes per value
 
 # Memory-efficient precision (50% memory savings)
-detector = RankOD(n_neighbors=15, max_rank=100, dtype=np.float32)
+detector = RankOD(dtype=np.float32)
 # Memory: 4 bytes per value
 # Note: PyNNDescent uses float32 internally, so this avoids conversion overhead
 ```
@@ -104,110 +135,12 @@ detector = RankOD(n_neighbors=15, max_rank=100, dtype=np.float32)
 2. **Neighbor Pre-computation (`precompute_neighbors`)**: Trade memory for speed
 
 ```python
-# Memory-efficient mode (default, recommended for large datasets)
-detector = RankOD(n_neighbors=15, max_rank=100, precompute_neighbors=False)
-# Memory: O(n_samples) | Scoring: Moderate (on-demand queries)
-
-# Speed-optimized mode (for smaller datasets or when memory is plentiful)
+# Speed-optimized mode (for smaller datasets or with sufficient memory
 detector = RankOD(n_neighbors=15, max_rank=100, precompute_neighbors=True)
-# Memory: O(n_samples × max_rank) | Scoring: Fast (array lookups)
+
+# Memory-efficient mode (only for large datasets)
+detector = RankOD(n_neighbors=15, max_rank=100, precompute_neighbors=False)
 ```
-
-**Memory Example** (1M samples, 50 features, `max_rank=100`):
-- Base (float64): ~400MB
-- With float32: ~200MB (50% savings)
-- With precompute: +800MB for neighbor indices
-- Combined (float32 + precompute): ~1GB total
-
-## Why HiRank?
-
-Traditional distance-based outlier detection methods struggle in high dimensions due to the "curse of dimensionality". RankOD addresses this by:
-
-- **Using ranks instead of distances**: Ranks are more stable in high dimensions
-- **Reverse k-NN**: Captures how often a point appears in others' neighborhoods
-- **Kernel smoothing**: Provides robustness to rank variations
-- **Approximate NN search**: PyNNDescent enables efficient computation even for large datasets
-
-## Use Cases: Outlier Detection vs Out-of-Distribution Detection
-
-RankOD is versatile and can handle both **outlier detection** and **out-of-distribution (OOD) detection**. Understanding the difference is important:
-
-### Outlier Detection
-Finding **rare or unusual instances** within the expected data distribution.
-
-**Examples:**
-- Damaged products on a manufacturing line
-- Fraudulent transactions among normal ones
-- Corrupted sensor readings
-
-```python
-# Outlier Detection in feature space
-from hirank import RankOD
-import numpy as np
-
-# Training data: normal operation
-sensor_readings = np.random.randn(1000, 50)  # Normal sensors
-detector = RankOD(n_neighbors=15, max_rank=100)
-detector.fit(sensor_readings)
-
-# New data: includes some faulty sensors
-new_readings = np.random.randn(100, 50)
-new_readings[0] *= 5  # Simulated fault
-scores = detector.score_samples(new_readings)
-
-# High scores indicate outliers (faulty sensors)
-print(f"Faulty sensor score: {scores[0]:.3f}")  # High score
-print(f"Normal sensor score: {scores[1]:.3f}")  # Low score
-```
-
-### Out-of-Distribution (OOD) Detection
-Identifying inputs from a **fundamentally different distribution** than training data.
-
-**Examples:**
-- Novel classes not seen during training
-- Domain shift (model trained on photos, tested on sketches)
-- Adversarial or corrupted inputs
-
-```python
-# OOD Detection with neural network embeddings
-from hirank import RankOD
-from sklearn.datasets import fetch_openml
-from sklearn.decomposition import PCA
-
-# Load MNIST and create OOD scenario
-mnist = fetch_openml('mnist_784', version=1, parser='auto')
-X, y = mnist.data.values, mnist.target.values.astype(int)
-
-# Train on digits 0-8 only (known distribution)
-train_mask = y < 9
-X_train = X[train_mask]
-
-# Reduce dimensionality
-pca = PCA(n_components=50, random_state=42)
-X_train_reduced = pca.fit_transform(X_train)
-
-# Fit detector on known classes
-detector = RankOD(n_neighbors=15, max_rank=100)
-detector.fit(X_train_reduced)
-
-# Test on all digits (includes digit 9 as OOD)
-X_test_reduced = pca.transform(X[:1000])
-scores = detector.score_samples(X_test_reduced)
-
-# Digit 9 (OOD) gets high scores
-y_test = y[:1000]
-ood_mask = y_test == 9
-print(f"Mean OOD score (digit 9): {scores[ood_mask].mean():.3f}")  # High
-print(f"Mean in-distribution score: {scores[~ood_mask].mean():.3f}")  # Low
-```
-
-### Key Insight
-
-Neural networks map semantically similar inputs close together in embedding space. This makes RankOD effective for OOD detection:
-- **Training classes** → dense regions in embedding space
-- **Novel classes** → sparse regions → detected as outliers
-
-This is why the MNIST example (hiding digit 9) demonstrates OOD detection rather than pure outlier detection—digit 9 is a completely unseen class, not just an unusual instance of known classes.
 
 ## Development
 
@@ -236,7 +169,7 @@ ruff check hirank tests benchmarks
 
 ## License
 
-HiRank is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) for details.
+HiRank is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
@@ -245,5 +178,5 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 ## Acknowledgments
 
 - Built on [PyNNDescent](https://github.com/lmcinnes/pynndescent) for efficient nearest neighbor search
-- Inspired by rank-based outlier detection research & Rank-Based Outlier Detection H. Huang, Kishan Mehrotra, Chilukuri K. Mohan, 2011.
 - Part of the [Tutte Institute](https://www.tutteinstitute.com/) ecosystem
+- Consider citing the Huang et al. or Sun et al. paper mentioned above.

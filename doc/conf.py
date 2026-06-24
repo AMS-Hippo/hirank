@@ -51,7 +51,7 @@ napoleon_use_rtype = True
 # Autodoc settings
 autodoc_default_options = {
     "members": True,
-    'show-inheritance': True,
+    "show-inheritance": True,
     # "special-members": "__init__",
     "exclude-members": "__weakref__",
 }
