@@ -9,5 +9,6 @@ PyNNDescent for efficient approximate nearest neighbor search.
 __version__ = "0.1.1"
 
 from hirank.rankod import RankOD
+from hirank.bootstrap_rankod import BootstrapRankOD
 
-__all__ = ["RankOD"]
+__all__ = ["RankOD", "BootstrapRankOD"]
