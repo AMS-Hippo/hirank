@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "HiRank"
 copyright = "2026 Tutte Institute for Mathematics and Computing"
 author = "John Healy"
-release = "0.1.1"
+release = "0.1.2"
 
 # -- General configuration ---------------------------------------------------
 
