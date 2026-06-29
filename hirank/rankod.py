@@ -163,6 +163,54 @@ def local_ecdf_scores(knn_indices, training_raw_scores, raw_scores):
     return ecdfs
 
 
+@njit(cache=True)
+def weighted_ecdf_scores(training_raw_scores, raw_scores, prior_weight):
+    """Transform raw scores into weighted ECDF scores."""
+    order = np.argsort(training_raw_scores)
+    sorted_scores = training_raw_scores[order]
+    sorted_weight = prior_weight[order]
+    cum_weight = np.cumsum(sorted_weight)
+    total_weight = cum_weight[-1]
+    if total_weight <= 0:
+        return ecdf_scores(training_raw_scores, raw_scores)
+
+    ecdfs = np.empty_like(raw_scores, dtype=np.float64)
+    for i in range(len(raw_scores)):
+        insert_index = np.searchsorted(sorted_scores, raw_scores[i])
+        if insert_index == 0:
+            ecdfs[i] = 0.0
+        else:
+            ecdfs[i] = cum_weight[insert_index - 1] / total_weight
+    return ecdfs
+
+
+@njit(cache=True, parallel=True)
+def weighted_local_ecdf_scores(knn_indices, training_raw_scores, raw_scores, prior_weight):
+    """Transform raw scores into weighted local ECDF scores."""
+    ecdfs = np.empty_like(raw_scores, dtype=np.float64)
+    for i in prange(len(raw_scores)):
+        raw_score = raw_scores[i : i + 1]
+        local_indices = knn_indices[i]
+        ecdfs[i] = weighted_ecdf_scores(
+            training_raw_scores[local_indices], raw_score, prior_weight[local_indices]
+        )[0]
+    return ecdfs
+
+
+@njit(cache=True)
+def weighted_quantile(values, q, prior_weight):
+    """Weighted quantile helper for the training offset."""
+    order = np.argsort(values)
+    sorted_values = values[order]
+    sorted_weight = prior_weight[order]
+    cum_weight = np.cumsum(sorted_weight)
+    cutoff = q * cum_weight[-1]
+    index = np.searchsorted(cum_weight, cutoff)
+    if index >= len(sorted_values):
+        index = len(sorted_values) - 1
+    return sorted_values[index]
+
+
 class RankOD(OutlierMixin, BaseEstimator):
     """
     Rank-based Outlier Detection using Reverse k-NN Density Estimation.
@@ -313,7 +361,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         self.random_state = random_state
         self.verbose = verbose
 
-    def fit(self, X, y=None):
+    def fit(self, X, y=None, prior_weight=None):
         """
         Fit the RankOD detector on training data.
 
@@ -324,6 +372,10 @@ class RankOD(OutlierMixin, BaseEstimator):
 
         y : Ignored
             Not used, present for sklearn compatibility.
+
+        prior_weight : array-like of shape (n_samples,), optional
+            User-specified training vertex weights. If None, the unweighted
+            code path is used.
 
         Returns
         -------
@@ -339,6 +391,17 @@ class RankOD(OutlierMixin, BaseEstimator):
                 )
             X = row_normalize(X)
         n_samples, n_features = X.shape
+
+        self._use_prior_weight_ = prior_weight is not None
+        self.prior_weight_ = None
+        if self._use_prior_weight_:
+            self.prior_weight_ = np.asarray(prior_weight, dtype=np.float64)
+            if self.prior_weight_.shape != (n_samples,):
+                raise ValueError(
+                    f"prior_weight must have shape ({n_samples},), got {self.prior_weight_.shape}"
+                )
+            if np.sum(self.prior_weight_) <= 0:
+                raise ValueError("prior_weight must have positive total weight")
 
         if self.n_neighbors >= n_samples:
             raise ValueError(
@@ -396,7 +459,7 @@ class RankOD(OutlierMixin, BaseEstimator):
             is_training=True,
         )
         # Save offset
-        self.offset_ = self._compute_offset(self.outlier_scores_)
+        self.offset_ = self._compute_offset(self.outlier_scores_, use_weights=True)
 
         return self
 
@@ -491,7 +554,7 @@ class RankOD(OutlierMixin, BaseEstimator):
         predictions[outliers] = -1
         return predictions
 
-    def fit_predict(self, X, y=None):
+    def fit_predict(self, X, y=None, prior_weight=None):
         """
         Fit the detector and predict outliers on training data.
 
@@ -503,13 +566,16 @@ class RankOD(OutlierMixin, BaseEstimator):
         y : Ignored
             Not used, present for sklearn compatibility.
 
+        prior_weight : array-like of shape (n_samples,), optional
+            User-specified training vertex weights passed to fit.
+
         Returns
         -------
         np.ndarray of shape (n_samples,)
             Predicted labels: -1 for outliers, 1 for inliers.
 
         """
-        self.fit(X)
+        self.fit(X, y=y, prior_weight=prior_weight)
         prediction = np.full_like(self.outlier_scores_, 1, dtype="int")
         outliers = (
             self.outlier_scores_ >= self.offset_
@@ -571,7 +637,7 @@ class RankOD(OutlierMixin, BaseEstimator):
                 knn_indices, knn_distances, neighbor_nn_distances
             )
         elif self.mode == "sun":
-            raw_scores = self._compute_sun_scores(knn_distances)
+            raw_scores = self._compute_sun_scores(knn_indices, knn_distances)
         else:
             raise ValueError(f"Score must be one of 'rank' or 'sun'. Got {self.mode}")
 
@@ -581,13 +647,26 @@ class RankOD(OutlierMixin, BaseEstimator):
         elif self.calibration == "local":
             if is_training:
                 self._training_raw_scores_ = raw_scores
-            outlier_scores = local_ecdf_scores(
-                knn_indices, self._training_raw_scores_, raw_scores
-            )
+            if self._use_prior_weight_:
+                outlier_scores = weighted_local_ecdf_scores(
+                    knn_indices,
+                    self._training_raw_scores_,
+                    raw_scores,
+                    self.prior_weight_,
+                )
+            else:
+                outlier_scores = local_ecdf_scores(
+                    knn_indices, self._training_raw_scores_, raw_scores
+                )
         elif self.calibration == "global":
             if is_training:
                 self._training_raw_scores_ = raw_scores
-            outlier_scores = ecdf_scores(self._training_raw_scores_, raw_scores)
+            if self._use_prior_weight_:
+                outlier_scores = weighted_ecdf_scores(
+                    self._training_raw_scores_, raw_scores, self.prior_weight_
+                )
+            else:
+                outlier_scores = ecdf_scores(self._training_raw_scores_, raw_scores)
 
         else:
             raise ValueError(
@@ -601,6 +680,7 @@ class RankOD(OutlierMixin, BaseEstimator):
 
     def _compute_sun_scores(
         self,
+        knn_indices,
         knn_distances,
     ):
         """Compute Sun scores"""
@@ -609,6 +689,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         # are in [0,2], so divide by 2 to normalize
         # and reverse so bigger distance is smaller score
         scores = 1 - (scores / 2)
+        if self._use_prior_weight_:
+            scores = scores * np.mean(self.prior_weight_[knn_indices], axis=1)
         return scores
 
     def _compute_rank_scores(
@@ -641,6 +723,8 @@ class RankOD(OutlierMixin, BaseEstimator):
         kernel_values[reverse_ranks > self.max_rank] = (
             0  # No contribution from unranked
         )
+        if self._use_prior_weight_:
+            kernel_values = kernel_values * self.prior_weight_[knn_indices]
         scores = np.mean(kernel_values, axis=1)
 
         # Normalize, min is 0
@@ -649,13 +733,23 @@ class RankOD(OutlierMixin, BaseEstimator):
 
         return scores
 
-    def _compute_offset(self, scores, contamination: float | None = None) -> float:
+    def _compute_offset(
+        self,
+        scores,
+        contamination: float | None = None,
+        use_weights: bool = False,
+    ) -> float:
         """Get the decision threshold"""
         if contamination is None:
             contamination = self.contamination
         percentile_threshold = (
             (1 - contamination) if self.reverse_scores else contamination
         )
+        if use_weights and self._use_prior_weight_:
+            if np.all(self.prior_weight_ == self.prior_weight_[0]):
+                percentile_threshold *= 100
+                return np.percentile(scores, percentile_threshold)
+            return weighted_quantile(scores, percentile_threshold, self.prior_weight_)
         percentile_threshold *= 100
         offset = np.percentile(scores, percentile_threshold)
         return offset
