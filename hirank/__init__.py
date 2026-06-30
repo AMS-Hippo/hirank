@@ -8,7 +8,23 @@ PyNNDescent for efficient approximate nearest neighbor search.
 
 __version__ = "0.1.2"
 
+from hirank.aggregate import (
+    CallableAggregator,
+    ECDFMeanAggregator,
+    FunctionAggregator,
+    MeanAggregator,
+    ScoreAggregator,
+)
+from hirank.bootstrap_rankod import BootstrapRankOD, ProjectionRankOD
 from hirank.rankod import RankOD
-from hirank.bootstrap_rankod import BootstrapRankOD
 
-__all__ = ["RankOD", "BootstrapRankOD"]
+__all__ = [
+    "RankOD",
+    "BootstrapRankOD",
+    "ProjectionRankOD",
+    "ScoreAggregator",
+    "CallableAggregator",
+    "FunctionAggregator",
+    "ECDFMeanAggregator",
+    "MeanAggregator",
+]
